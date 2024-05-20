@@ -1,0 +1,2 @@
+Projects written in C are currently on hold, because I want to do the exact same thing, but using x86_64 nasm.
+Why? I want to learn about what CPU does.

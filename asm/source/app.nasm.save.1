@@ -1,0 +1,269 @@
+
+      ; NOTES:
+      ; Linux will use xlib api for windowing. 
+      ; 1. Functions ABI: rdi, rsi, rdx, rcx, r8, r9, stack (in reverse order)
+
+extern XOpenDisplay
+extern XCreateSimpleWindow
+extern XDefaultRootWindow
+
+global main
+
+section .text
+
+  ; -------------------------------------------------------------------------------------------------------------------------- ;
+
+  ; linux_print_text requires address to zero-terminated string in rsi register.
+
+  linux_print_text:
+
+      ; Save registers.
+
+    push rax
+    push rdi
+    push rsi
+    push rdx
+
+      ; Set string length counter and adjust pointer.
+
+    mov rdx, -1
+    
+      ; Count string's length until 0 is found.
+    
+    .str_len_cnt:
+			inc rdx
+      cmp byte [rsi + rdx], 0
+      jne .str_len_cnt
+
+      ; Output this string to console.
+
+    mov rax, 1
+    mov rdi, 1
+    syscall
+
+      ; Restore registers.
+
+    pop rdx
+    pop rsi
+    pop rdi
+    pop rax
+
+    ret
+    
+  ; -------------------------------------------------------------------------------------------------------------------------- ;
+    
+  ; linux_print_int64 requires signed 64 bit integer in rax.
+  
+  linux_print_int64:
+  
+      ; Save registers.
+  
+    push rax
+    push rdi
+    push rsi
+    push rdx
+    push r8
+    
+      ; Check if number is negative, if so, then mark it for later.
+    
+    cmp rax, 0
+    
+    jl .negate_number
+    jae .negate_nothing
+    
+    .negate_number:
+      neg rax
+      mov r8, 1
+      
+    .negate_nothing:
+    
+      ; Set string length counter to zero.
+    
+    xor rdi, rdi
+        
+      ; Set number to divide by.
+        
+    mov rsi, 10
+    
+      ; Convert int_64 in rax into string.
+    
+    .int_to_str:
+      xor rdx, rdx          ; Set remainder to 0,
+      div rsi               ; divide number provided in rax by 10,
+      dec rsp               ; decrement / enlarge stack to hold one more character,
+      inc rdi               ; increment string length counter,
+      mov byte [rsp], dl    ; store remainder as on stack,
+      add byte [rsp], '0'   ; convert stored remainder to printable ascii character,
+      cmp rax, 0            ; check if original number has digits left,
+      jne .int_to_str       ; if yes, then repeat.
+    
+      ; If original value was marked as negative, then print additional minus.
+    
+    cmp r8, 1
+    je .add_minus
+    jne .add_nothing
+    
+    .add_minus:
+      dec rsp
+      inc rdi
+      mov byte [rsp], '-'
+    
+    .add_nothing:
+    
+      ; Write to console.
+    
+    mov rax, 1
+    mov rdx, rdi
+    mov rdi, 1
+    mov rsi, rsp
+    syscall
+    
+      ; Restore registers and stack.
+    
+    add rsp, rdx
+    
+    pop r8
+    pop rax
+    pop rdi
+    pop rsi
+    pop rdx
+    
+    ret
+      
+  ; -------------------------------------------------------------------------------------------------------------------------- ;
+      
+  ; linux_print_float64 requires floating point value in xmm0 register
+      
+  linux_print_float64:
+      
+      ; save registers
+      
+    push rax
+    push rdi
+    push rsi
+    push rdx
+      
+    sub rsp, 32
+    movq [rsp + 16], xmm0
+    movq [rsp +  0], xmm1
+      
+      ; Copy original value from xmm0 to xmm1,
+      ; truncate original value,
+      ; subtract truncated from copy to get fraction,
+      ; multiply fraction by float_print_precision so it isn't zeroed after conversion int64.
+      
+    movsd   xmm1, xmm0
+    roundsd xmm0, xmm1, 11b
+    subsd   xmm1, xmm0
+    mulsd   xmm1, [float_print_precision]
+    
+      ; Convert truncated value to int,
+      ; print it to console.
+    
+    cvtsd2si rax, xmm0
+    call linux_print_int64
+    
+      ; Decrease stack pointer to hold dot (.) character,
+      ; call sys_write syscall to write it to console,
+      ; restore stack.
+   
+    dec rsp
+    mov byte [rsp], '.'
+    
+    mov rax, 1
+    mov rdi, 1
+    mov rsi, rsp
+    mov rdx, 1
+    
+    syscall
+    
+    inc rsp
+    
+      ; Convert fraction to int64,
+      ; check if original value was negative, to make fraction positive so it isn't displayed in console like: -1.-25, but -1.25.
+    
+    cvtsd2si rax, xmm1
+    
+    cmp rax, 0
+    jl .neg
+    jae .nothing
+    
+    .neg:
+      neg rax
+    .nothing:
+    
+    call linux_print_int64
+
+      ; Restore registers and stack.
+
+    movq xmm1, [rsp +  0]
+    movq xmm0, [rsp + 16]
+    
+    add rsp, 32
+    
+    pop rdx
+    pop rsi
+    pop rdi
+    pop rax
+
+    ret
+
+  xlib_open_window:
+
+			; open connection to x11 and store it in [xlib_connection]
+
+    xor rdi, rdi
+    call XOpenDisplay
+    mov [xlib_connection], rax
+
+			; store x11's default root window in [xlib_root_window]
+
+		mov rdi, [xlib_connection]
+		call XDefaultRootWindow
+		mov [xlib_root_window], rax
+
+			; open x11 window
+
+		mov rdi, [xlib_connection]
+		mov rsi, [xlib_root_window]
+		xor rdx, rdx
+		xor rcx, rcx
+		push 0
+		push 0
+		push 0
+		push 1080
+		push 1920
+
+		call XCreateSimpleWindow
+
+		mov [xlib_window], rax
+
+    ret
+
+  ; -------------------------------------------------------------------------------------------------------------------------- 
+
+  main:
+
+		sub rsp, 8
+
+		call xlib_open_window
+
+		add rsp, 8
+
+  	mov rax, 60
+  	xor rdi, rdi
+  	syscall
+  	ret
+
+section .data
+
+  float_print_precision: dq 1000.0
+	xlib_window_width: dd 1920
+	xlib_window_height: dd 1080
+	newline: db 10, 0
+
+section .bss
+
+  xlib_connection:  resq 1
+	xlib_window:		  resq 1
+	xlib_root_window: resq 1
